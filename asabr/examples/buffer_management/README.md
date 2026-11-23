@@ -10,21 +10,27 @@ cargo run --example buffer_management
 
 `BufferManager` tracks the available memory of a node over time. When routing bundles, it ensures that the node's storage capacity is never exceeded during the bundle's retention period (from reception to transmission).
 
-In this example, the contact plan is parsed statically using `BufferManager` for the nodes and `ETOManager` for the contacts. In the A-SABR contact plan file, the initial volume capacity is provided directly after the node name:
-
+In this example, the contact plan is parsed statically using `BufferManager` for the nodes and `EVLManager` for the contacts, and a full `SpsnHybridParenting` router routes bundles across a 3-node network (`Earth -> Satellite -> Mars`). In the A-SABR contact plan file, the initial volume capacity is provided directly after the node name:
 ```
 node <id> <name> <capacity>
 ```
 
 ### Scenario
 
-The script loads a contact plan from `buffer_format.asabr` where node 1 (Satellite) has a maximum memory capacity of 1000.
+The script loads a contact plan from `buffer_format.asabr` where node 1 (Satellite) has a maximum memory capacity of 1000 (`Earth` and `Mars` have large capacities).
 
-We simulate three bundles requiring storage on the Satellite with overlapping retention windows to demonstrate temporal tracking :
-- **Bundle 1**: size 600, retained from t=0 to t=70.
-- **Bundle 2**: size 300, retained from t=20 to t=90 (released after Bundle 1).
-- **Bundle 3**: size 250, attempting to be retained from t=40 to t=60.
+`Earth -> Satellite` is available continuously (0..100), while `Satellite -> Mars` has two contacts:
 
+- `60..70` at rate 60 (max volume 600)
+
+- `80..90` at rate 100 (max volume 1000)
+
+Three bundles are routed sequentially from `Earth` to `Mars`, creating asymmetrical, overlapping retention windows on `Satellite`:
+- **Bundle 1**: size 600, sent at t=0, uses the first contact (60..70) and is retained on Satellite from t=0 to t=70.
+- **Bundle 2**: size 300, sent at t=20, uses the second contact (80..90) and is retained on Satellite from t=20 to t=83 (released after Bundle 1).
+- **Bundle 3**: size 250, sent at t=40, attempts to use the remaining volume on the second contact.
+
+Buffer occupancy on `Satellite` :
 ```
 volume
 |
@@ -41,15 +47,13 @@ volume
 |      |   |                   |b2 only|
 |    0 +---+---+-------+-------+-------+---+--------> time
            |   |       |       |       |
-          t=0 t=20    t=40    t=70    t=90
+          t=0 t=20    t=40    t=70    t=83
 ```
 
 ### Behavior
 
-The `BufferManager` evaluates both retention requests using `dry_run_retention`.
+**Bundle 1 (600)** is routed via the first `Satellite -> Mars` contact, saturating its volume and occupying 600 on `Satellite` until t=70.
 
-**Bundle 1 (600)** is accepted and committed (600 <= 1000).
+**Bundle 2 (300)** is routed via the second `Satellite -> Mars` contact, pushing peak memory usage on `Satellite` to 900 between t=20 and t=70, and releasing at t=83.
 
-**Bundle 2 (300)** is accepted and committed, pushing peak volume to 900 strictly between t=20 and t=70.
-
-**Bundle 3 (250)** is rejected. Even though the buffer would have enough space before t=20 or after t=70, accommodating bundle 3 strictly between t=40 and t=60 would push the total volume to 1150 (since both b1 and b2 are present in that window), safely preventing a capacity breach.
+**Bundle 3 (250)** is rejected (`None`). Although the second `Satellite -> Mars` contact still has enough transmission volume, holding Bundle 3 on `Satellite` from t=40 onward overlaps with both Bundle 1 and Bundle 2 between t=40 and t=70, which would push occupancy to 1150 (> 1000).
